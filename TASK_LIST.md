@@ -17,11 +17,11 @@
 
 | フェーズ | 進捗 | 完了タスク | 総タスク |
 |---------|------|-----------|---------|
-| Phase 0: 環境構築 | 40% | 6 | 15 |
-| Phase 1: MVP (Speaking) | 0% | 0 | 45 |
+| Phase 0: 環境構築 | 73% | 11 | 15 |
+| Phase 1: MVP (Speaking) | 22% | 10 | 45 |
 | Phase 2: Listening + 安定化 | 0% | 0 | 25 |
 | Phase 3: 高度な音声変換 | 0% | 0 | 15 |
-| **合計** | **6%** | **6** | **100** |
+| **合計** | **21%** | **21** | **100** |
 
 ---
 
@@ -62,18 +62,18 @@
 
 ### 0.3 プロジェクト構造作成
 
-- [ ] **0.3.1** Xcode プロジェクト作成
-  - [ ] VoiceChanger.xcodeproj 作成
-  - [ ] ターゲット設定（App, Driver, Tests）
+- [x] **0.3.1** Swift Package プロジェクト作成
+  - [x] Package.swift 作成
+  - [x] ターゲット設定（VoiceChangerApp, AudioEngine, DSP, Tests）
   - [ ] Build Settings 最適化
 
-- [ ] **0.3.2** ディレクトリ構造作成
-  - [ ] App/Sources/ 以下のフォルダ作成
-  - [ ] VirtualMicDriver/ フォルダ作成
-  - [ ] Tests/ フォルダ作成
+- [x] **0.3.2** ディレクトリ構造作成
+  - [x] App/Sources/ 以下のフォルダ作成
+  - [x] VirtualMicDriver/ フォルダ作成
+  - [x] Tests/ フォルダ作成
 
-- [ ] **0.3.3** 依存関係管理
-  - [ ] Swift Package Manager 設定
+- [x] **0.3.3** 依存関係管理
+  - [x] Swift Package Manager 設定
   - [ ] 外部ライブラリ追加（必要に応じて）
 
 ---
@@ -83,35 +83,36 @@
 ### 1.1 仮想マイクドライバ (Virtual Mic)
 
 #### 1.1.1 調査・設計
-- [ ] **1.1.1.1** BlackHole ソースコード調査
-  - [ ] Audio Server Driver Plug-in 構造理解
-  - [ ] デバイス登録フロー確認
-  - [ ] ストリーム処理フロー確認
+- [x] **1.1.1.1** BlackHole ソースコード調査
+  - [x] Audio Server Driver Plug-in 構造理解
+  - [x] デバイス登録フロー確認
+  - [x] ストリーム処理フロー確認
 
-- [ ] **1.1.1.2** 仮想マイク設計ドキュメント作成
-  - [ ] インターフェース設計
-  - [ ] メモリ共有方式決定
-  - [ ] エラーハンドリング設計
+- [x] **1.1.1.2** 仮想マイク設計ドキュメント作成 → [VIRTUAL_MIC_DESIGN.md](docs/VIRTUAL_MIC_DESIGN.md)
+  - [x] インターフェース設計
+  - [x] メモリ共有方式決定
+  - [x] エラーハンドリング設計
 
 #### 1.1.2 実装
-- [ ] **1.1.2.1** VirtualMicDriver プロジェクト作成
-  - [ ] Xcode プロジェクト設定
-  - [ ] Info.plist 設定
+- [~] **1.1.2.1** VirtualMicDriver プロジェクト作成
+  - [x] ソースファイル作成（VirtualMicDriver.c/.h, VirtualMicProperties.c）
+  - [x] Info.plist 設定
   - [ ] Entitlements 設定
+  - [ ] Xcodeプロジェクト設定
 
-- [ ] **1.1.2.2** デバイス登録実装
-  - [ ] PlugIn エントリポイント実装
-  - [ ] AudioServerPlugInDriverInterface 実装
-  - [ ] デバイスUID/名前設定
+- [x] **1.1.2.2** デバイス登録実装
+  - [x] PlugIn エントリポイント実装
+  - [x] AudioServerPlugInDriverInterface 実装
+  - [x] デバイスUID/名前設定
 
-- [ ] **1.1.2.3** ストリーム処理実装
-  - [ ] 入力ストリーム作成
-  - [ ] IOProc コールバック実装
-  - [ ] サンプルレート対応（48kHz）
+- [x] **1.1.2.3** ストリーム処理実装
+  - [x] 入力ストリーム作成
+  - [x] IOProc コールバック実装
+  - [x] サンプルレート対応（48kHz）
 
-- [ ] **1.1.2.4** 共有メモリ実装
-  - [ ] Ring Buffer 作成
-  - [ ] App との接続インターフェース
+- [x] **1.1.2.4** 共有メモリ実装
+  - [x] Ring Buffer 読み取り
+  - [x] App との接続インターフェース（POSIX shm_open）
 
 #### 1.1.3 検証
 - [ ] **1.1.3.1** デバイス認識テスト
