@@ -162,26 +162,64 @@ public struct VoicePreset: Codable, Identifiable {
 
 // MARK: - DSP Modules
 
-/// ハイパスフィルタ
+/// ハイパスフィルタ（Biquad実装）
 public class HighPassFilter {
     private var cutoffHz: Float
-    private var sampleRate: Int
-    private var previousSample: Float = 0
-    private var alpha: Float
+    private var sampleRate: Float
+
+    // Biquad coefficients
+    private var b0: Float = 0
+    private var b1: Float = 0
+    private var b2: Float = 0
+    private var a1: Float = 0
+    private var a2: Float = 0
+
+    // Filter state
+    private var x1: Float = 0
+    private var x2: Float = 0
+    private var y1: Float = 0
+    private var y2: Float = 0
 
     public init(cutoffHz: Float, sampleRate: Int) {
         self.cutoffHz = cutoffHz
-        self.sampleRate = sampleRate
-        self.alpha = 1.0 / (1.0 + 2.0 * .pi * cutoffHz / Float(sampleRate))
+        self.sampleRate = Float(sampleRate)
+        calculateCoefficients()
+    }
+
+    private func calculateCoefficients() {
+        let omega = 2.0 * Float.pi * cutoffHz / sampleRate
+        let cosOmega = cos(omega)
+        let sinOmega = sin(omega)
+        let q: Float = 0.707  // Butterworth Q
+        let alpha = sinOmega / (2.0 * q)
+
+        let a0 = 1.0 + alpha
+        b0 = ((1.0 + cosOmega) / 2.0) / a0
+        b1 = (-(1.0 + cosOmega)) / a0
+        b2 = ((1.0 + cosOmega) / 2.0) / a0
+        a1 = (-2.0 * cosOmega) / a0
+        a2 = (1.0 - alpha) / a0
     }
 
     public func process(_ frame: inout AudioFrame) {
         for i in 0..<frame.count {
-            let input = frame.samples[i]
-            let output = alpha * (previousSample + input - frame.samples[max(0, i-1)])
-            frame.samples[i] = output
-            previousSample = output
+            let x0 = frame.samples[i]
+            let y0 = b0 * x0 + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2
+
+            x2 = x1
+            x1 = x0
+            y2 = y1
+            y1 = y0
+
+            frame.samples[i] = y0
         }
+    }
+
+    public func reset() {
+        x1 = 0
+        x2 = 0
+        y1 = 0
+        y2 = 0
     }
 }
 
@@ -265,42 +303,189 @@ public class FormantShifter {
     }
 }
 
-/// イコライザ（3バンド）
+/// イコライザ（3バンド - Biquad Peaking EQ）
 public class Equalizer {
-    private var lowGain: Float = 1.0
-    private var midGain: Float = 1.0
-    private var highGain: Float = 1.0
+    private let sampleRate: Float = 48000
+
+    // バンド設定
+    private let lowFreq: Float = 200      // Low shelf
+    private let midFreq: Float = 1000     // Peaking
+    private let highFreq: Float = 4000    // High shelf
+
+    // ゲイン (dB)
+    private var lowGainDb: Float = 0
+    private var midGainDb: Float = 0
+    private var highGainDb: Float = 0
+
+    // Biquad フィルター (3バンド)
+    private var lowFilter: BiquadFilter
+    private var midFilter: BiquadFilter
+    private var highFilter: BiquadFilter
+
+    public init() {
+        lowFilter = BiquadFilter()
+        midFilter = BiquadFilter()
+        highFilter = BiquadFilter()
+
+        updateFilters()
+    }
 
     public func setGains(low: Float, mid: Float, high: Float) {
-        lowGain = pow(10, low / 20)
-        midGain = pow(10, mid / 20)
-        highGain = pow(10, high / 20)
+        lowGainDb = max(-12, min(12, low))
+        midGainDb = max(-12, min(12, mid))
+        highGainDb = max(-12, min(12, high))
+        updateFilters()
+    }
+
+    private func updateFilters() {
+        lowFilter.setLowShelf(frequency: lowFreq, gain: lowGainDb, sampleRate: sampleRate)
+        midFilter.setPeaking(frequency: midFreq, gain: midGainDb, q: 1.0, sampleRate: sampleRate)
+        highFilter.setHighShelf(frequency: highFreq, gain: highGainDb, sampleRate: sampleRate)
     }
 
     public func process(_ frame: inout AudioFrame) {
-        // TODO: Biquadフィルタによる3バンドEQ実装
-        // 現時点では全体ゲインのみ適用
-        let avgGain = (lowGain + midGain + highGain) / 3
-        var gain = avgGain
-        vDSP_vsmul(frame.samples, 1, &gain, &frame.samples, 1, vDSP_Length(frame.count))
+        lowFilter.process(&frame)
+        midFilter.process(&frame)
+        highFilter.process(&frame)
+    }
+
+    public func reset() {
+        lowFilter.reset()
+        midFilter.reset()
+        highFilter.reset()
     }
 }
 
-/// リミッター
-public class Limiter {
-    private var ceiling: Float = 0.95  // -0.5dB
+/// 汎用Biquadフィルター
+public class BiquadFilter {
+    private var b0: Float = 1
+    private var b1: Float = 0
+    private var b2: Float = 0
+    private var a1: Float = 0
+    private var a2: Float = 0
 
-    public func setCeiling(_ db: Float) {
-        ceiling = pow(10, db / 20)
+    private var x1: Float = 0
+    private var x2: Float = 0
+    private var y1: Float = 0
+    private var y2: Float = 0
+
+    public init() {}
+
+    /// Low Shelf フィルター設定
+    public func setLowShelf(frequency: Float, gain: Float, sampleRate: Float) {
+        let A = pow(10, gain / 40)
+        let omega = 2.0 * Float.pi * frequency / sampleRate
+        let cosOmega = cos(omega)
+        let sinOmega = sin(omega)
+        let alpha = sinOmega / 2.0 * sqrt(2.0)
+
+        let a0 = (A + 1) + (A - 1) * cosOmega + 2 * sqrt(A) * alpha
+        b0 = (A * ((A + 1) - (A - 1) * cosOmega + 2 * sqrt(A) * alpha)) / a0
+        b1 = (2 * A * ((A - 1) - (A + 1) * cosOmega)) / a0
+        b2 = (A * ((A + 1) - (A - 1) * cosOmega - 2 * sqrt(A) * alpha)) / a0
+        a1 = (-2 * ((A - 1) + (A + 1) * cosOmega)) / a0
+        a2 = ((A + 1) + (A - 1) * cosOmega - 2 * sqrt(A) * alpha) / a0
+    }
+
+    /// High Shelf フィルター設定
+    public func setHighShelf(frequency: Float, gain: Float, sampleRate: Float) {
+        let A = pow(10, gain / 40)
+        let omega = 2.0 * Float.pi * frequency / sampleRate
+        let cosOmega = cos(omega)
+        let sinOmega = sin(omega)
+        let alpha = sinOmega / 2.0 * sqrt(2.0)
+
+        let a0 = (A + 1) - (A - 1) * cosOmega + 2 * sqrt(A) * alpha
+        b0 = (A * ((A + 1) + (A - 1) * cosOmega + 2 * sqrt(A) * alpha)) / a0
+        b1 = (-2 * A * ((A - 1) + (A + 1) * cosOmega)) / a0
+        b2 = (A * ((A + 1) + (A - 1) * cosOmega - 2 * sqrt(A) * alpha)) / a0
+        a1 = (2 * ((A - 1) - (A + 1) * cosOmega)) / a0
+        a2 = ((A + 1) - (A - 1) * cosOmega - 2 * sqrt(A) * alpha) / a0
+    }
+
+    /// Peaking EQ フィルター設定
+    public func setPeaking(frequency: Float, gain: Float, q: Float, sampleRate: Float) {
+        let A = pow(10, gain / 40)
+        let omega = 2.0 * Float.pi * frequency / sampleRate
+        let cosOmega = cos(omega)
+        let sinOmega = sin(omega)
+        let alpha = sinOmega / (2.0 * q)
+
+        let a0 = 1 + alpha / A
+        b0 = (1 + alpha * A) / a0
+        b1 = (-2 * cosOmega) / a0
+        b2 = (1 - alpha * A) / a0
+        a1 = (-2 * cosOmega) / a0
+        a2 = (1 - alpha / A) / a0
     }
 
     public func process(_ frame: inout AudioFrame) {
         for i in 0..<frame.count {
-            if frame.samples[i] > ceiling {
-                frame.samples[i] = ceiling
-            } else if frame.samples[i] < -ceiling {
-                frame.samples[i] = -ceiling
-            }
+            let x0 = frame.samples[i]
+            let y0 = b0 * x0 + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2
+
+            x2 = x1
+            x1 = x0
+            y2 = y1
+            y1 = y0
+
+            frame.samples[i] = y0
         }
+    }
+
+    public func reset() {
+        x1 = 0
+        x2 = 0
+        y1 = 0
+        y2 = 0
+    }
+}
+
+/// リミッター（ソフトニー + ルックアヘッド）
+public class Limiter {
+    private var ceiling: Float = 0.89  // -1dB
+    private var threshold: Float = 0.7  // Soft knee starts here
+    private var attackCoeff: Float = 0.001
+    private var releaseCoeff: Float = 0.05
+    private var envelope: Float = 0
+
+    public func setCeiling(_ db: Float) {
+        ceiling = pow(10, db / 20)
+        threshold = ceiling * 0.8
+    }
+
+    public func process(_ frame: inout AudioFrame) {
+        for i in 0..<frame.count {
+            let input = frame.samples[i]
+            let absInput = abs(input)
+
+            // エンベロープ追従
+            if absInput > envelope {
+                envelope = attackCoeff * absInput + (1 - attackCoeff) * envelope
+            } else {
+                envelope = releaseCoeff * absInput + (1 - releaseCoeff) * envelope
+            }
+
+            // ゲイン計算
+            var gain: Float = 1.0
+            if envelope > threshold {
+                // ソフトニー圧縮
+                let overshoot = envelope - threshold
+                let range = ceiling - threshold
+                let compressionRatio: Float = 10.0  // 10:1 limiting
+                gain = threshold + range * tanh(overshoot / range * compressionRatio) / envelope
+            }
+
+            // クリッピング防止
+            if abs(input * gain) > ceiling {
+                gain = ceiling / max(abs(input), 0.0001)
+            }
+
+            frame.samples[i] = input * gain
+        }
+    }
+
+    public func reset() {
+        envelope = 0
     }
 }

@@ -3,8 +3,9 @@ import CoreAudio
 import Combine
 
 /// オーディオデバイス情報
-public struct AudioDevice: Identifiable, Hashable {
+public struct AudioDevice: Identifiable, Hashable, Sendable {
     public let id: String
+    public let deviceId: AudioDeviceID
     public let name: String
     public let uid: String
     public let isInput: Bool
@@ -14,7 +15,7 @@ public struct AudioDevice: Identifiable, Hashable {
     public let isVirtual: Bool
     public let transportType: TransportType
 
-    public enum TransportType: String {
+    public enum TransportType: String, Sendable {
         case builtIn
         case usb
         case bluetooth
@@ -49,17 +50,21 @@ public final class DeviceManager: ObservableObject {
         deviceChangeSubject.eraseToAnyPublisher()
     }
 
-    private var propertyListenerBlock: AudioObjectPropertyListenerBlock?
+    private var deviceListenerBlock: AudioObjectPropertyListenerBlock?
+    private var defaultInputListenerBlock: AudioObjectPropertyListenerBlock?
+    private var defaultOutputListenerBlock: AudioObjectPropertyListenerBlock?
 
     // MARK: - Initialization
 
     public init() {
         refreshDevices()
         startDeviceMonitoring()
+        startDefaultDeviceMonitoring()
     }
 
     deinit {
         stopDeviceMonitoring()
+        stopDefaultDeviceMonitoring()
     }
 
     // MARK: - Public Methods
@@ -165,18 +170,84 @@ public final class DeviceManager: ObservableObject {
 
         let transportType = getTransportType(deviceId: deviceId)
         let isVirtual = transportType == .virtual
+        let channelCount = getChannelCount(deviceId: deviceId, isInput: isInput)
+        let sampleRates = getSupportedSampleRates(deviceId: deviceId)
 
         return AudioDevice(
             id: String(deviceId),
+            deviceId: deviceId,
             name: name,
             uid: uid,
             isInput: isInput,
             isOutput: !isInput,
-            sampleRates: [48000], // 簡略化
-            channelCount: 1,
+            sampleRates: sampleRates,
+            channelCount: channelCount,
             isVirtual: isVirtual,
             transportType: transportType
         )
+    }
+
+    private func getChannelCount(deviceId: AudioDeviceID, isInput: Bool) -> Int {
+        var propertyAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyStreamConfiguration,
+            mScope: isInput ? kAudioObjectPropertyScopeInput : kAudioObjectPropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+
+        var dataSize: UInt32 = 0
+        var status = AudioObjectGetPropertyDataSize(deviceId, &propertyAddress, 0, nil, &dataSize)
+        guard status == noErr, dataSize > 0 else { return 0 }
+
+        let bufferListPtr = UnsafeMutablePointer<AudioBufferList>.allocate(capacity: Int(dataSize))
+        defer { bufferListPtr.deallocate() }
+
+        status = AudioObjectGetPropertyData(deviceId, &propertyAddress, 0, nil, &dataSize, bufferListPtr)
+        guard status == noErr else { return 0 }
+
+        let bufferList = bufferListPtr.pointee
+        var totalChannels = 0
+        let buffers = UnsafeBufferPointer(
+            start: &bufferListPtr.pointee.mBuffers,
+            count: Int(bufferList.mNumberBuffers)
+        )
+        for buffer in buffers {
+            totalChannels += Int(buffer.mNumberChannels)
+        }
+
+        return totalChannels
+    }
+
+    private func getSupportedSampleRates(deviceId: AudioDeviceID) -> [Double] {
+        var propertyAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyAvailableNominalSampleRates,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+
+        var dataSize: UInt32 = 0
+        var status = AudioObjectGetPropertyDataSize(deviceId, &propertyAddress, 0, nil, &dataSize)
+        guard status == noErr, dataSize > 0 else { return [48000] }
+
+        let rangeCount = Int(dataSize) / MemoryLayout<AudioValueRange>.size
+        var ranges = [AudioValueRange](repeating: AudioValueRange(), count: rangeCount)
+
+        status = AudioObjectGetPropertyData(deviceId, &propertyAddress, 0, nil, &dataSize, &ranges)
+        guard status == noErr else { return [48000] }
+
+        var rates = Set<Double>()
+        for range in ranges {
+            if range.mMinimum == range.mMaximum {
+                rates.insert(range.mMinimum)
+            } else {
+                // 一般的なサンプルレートを追加
+                let commonRates: [Double] = [44100, 48000, 88200, 96000, 176400, 192000]
+                for rate in commonRates where rate >= range.mMinimum && rate <= range.mMaximum {
+                    rates.insert(rate)
+                }
+            }
+        }
+
+        return rates.sorted()
     }
 
     private func getDeviceName(deviceId: AudioDeviceID) -> String? {
@@ -267,7 +338,7 @@ public final class DeviceManager: ObservableObject {
             mElement: kAudioObjectPropertyElementMain
         )
 
-        propertyListenerBlock = { [weak self] _, _ in
+        deviceListenerBlock = { [weak self] _, _ in
             DispatchQueue.main.async {
                 self?.refreshDevices()
             }
@@ -277,12 +348,12 @@ public final class DeviceManager: ObservableObject {
             AudioObjectID(kAudioObjectSystemObject),
             &propertyAddress,
             DispatchQueue.main,
-            propertyListenerBlock!
+            deviceListenerBlock!
         )
     }
 
     private func stopDeviceMonitoring() {
-        guard let block = propertyListenerBlock else { return }
+        guard let block = deviceListenerBlock else { return }
 
         var propertyAddress = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDevices,
@@ -296,5 +367,110 @@ public final class DeviceManager: ObservableObject {
             DispatchQueue.main,
             block
         )
+    }
+
+    private func startDefaultDeviceMonitoring() {
+        // デフォルト入力デバイス監視
+        var inputAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+
+        defaultInputListenerBlock = { [weak self] _, _ in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                let oldDevice = self.defaultInputDevice
+                self.defaultInputDevice = self.getDefaultInputDevice()
+                if oldDevice?.id != self.defaultInputDevice?.id {
+                    self.deviceChangeSubject.send(.defaultInputChanged(self.defaultInputDevice))
+                    logInfo("Default input device changed: \(self.defaultInputDevice?.name ?? "none")", category: .audio)
+                }
+            }
+        }
+
+        AudioObjectAddPropertyListenerBlock(
+            AudioObjectID(kAudioObjectSystemObject),
+            &inputAddress,
+            DispatchQueue.main,
+            defaultInputListenerBlock!
+        )
+
+        // デフォルト出力デバイス監視
+        var outputAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+
+        defaultOutputListenerBlock = { [weak self] _, _ in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                let oldDevice = self.defaultOutputDevice
+                self.defaultOutputDevice = self.getDefaultOutputDevice()
+                if oldDevice?.id != self.defaultOutputDevice?.id {
+                    self.deviceChangeSubject.send(.defaultOutputChanged(self.defaultOutputDevice))
+                    logInfo("Default output device changed: \(self.defaultOutputDevice?.name ?? "none")", category: .audio)
+                }
+            }
+        }
+
+        AudioObjectAddPropertyListenerBlock(
+            AudioObjectID(kAudioObjectSystemObject),
+            &outputAddress,
+            DispatchQueue.main,
+            defaultOutputListenerBlock!
+        )
+    }
+
+    private func stopDefaultDeviceMonitoring() {
+        if let block = defaultInputListenerBlock {
+            var address = AudioObjectPropertyAddress(
+                mSelector: kAudioHardwarePropertyDefaultInputDevice,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            AudioObjectRemovePropertyListenerBlock(
+                AudioObjectID(kAudioObjectSystemObject),
+                &address,
+                DispatchQueue.main,
+                block
+            )
+        }
+
+        if let block = defaultOutputListenerBlock {
+            var address = AudioObjectPropertyAddress(
+                mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            AudioObjectRemovePropertyListenerBlock(
+                AudioObjectID(kAudioObjectSystemObject),
+                &address,
+                DispatchQueue.main,
+                block
+            )
+        }
+    }
+
+    /// AudioDeviceID からデバイスを検索
+    public func device(for deviceId: AudioDeviceID) -> AudioDevice? {
+        if let device = inputDevices.first(where: { $0.deviceId == deviceId }) {
+            return device
+        }
+        return outputDevices.first(where: { $0.deviceId == deviceId })
+    }
+
+    /// Bluetooth デバイスかどうか判定
+    public func isBluetoothDevice(_ device: AudioDevice) -> Bool {
+        return device.transportType == .bluetooth
+    }
+
+    /// Bluetooth デバイス使用時の警告メッセージ
+    public var bluetoothWarningMessage: String? {
+        if let inputDevice = defaultInputDevice, isBluetoothDevice(inputDevice) {
+            return "Bluetooth入力デバイスを使用中です。レイテンシが増加する可能性があります。"
+        }
+        return nil
     }
 }
