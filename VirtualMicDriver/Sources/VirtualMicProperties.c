@@ -6,6 +6,7 @@
 //
 
 #include "VirtualMicDriver.h"
+#include <math.h>
 
 #pragma mark - PlugIn Properties
 
@@ -143,7 +144,6 @@ OSStatus VirtualMic_GetDevicePropertyData(const AudioObjectPropertyAddress* inAd
         case kAudioDevicePropertyDeviceIsRunning:
             *outDataSize = sizeof(UInt32);
             if (inDataSize >= sizeof(UInt32)) {
-                extern VirtualMicDriverState gDriverState;
                 *(UInt32*)outData = atomic_load(&gDriverState.isIORunning) ? 1 : 0;
             }
             break;
@@ -360,7 +360,6 @@ OSStatus VirtualMic_GetStreamPropertyData(const AudioObjectPropertyAddress* inAd
 
 OSStatus VirtualMic_GetVolumePropertyData(const AudioObjectPropertyAddress* inAddress, UInt32 inDataSize, UInt32* outDataSize, void* outData) {
     OSStatus result = noErr;
-    extern VirtualMicDriverState gDriverState;
 
     switch (inAddress->mSelector) {
         case kAudioObjectPropertyBaseClass:
@@ -449,7 +448,6 @@ OSStatus VirtualMic_GetVolumePropertyData(const AudioObjectPropertyAddress* inAd
 
 OSStatus VirtualMic_GetMutePropertyData(const AudioObjectPropertyAddress* inAddress, UInt32 inDataSize, UInt32* outDataSize, void* outData) {
     OSStatus result = noErr;
-    extern VirtualMicDriverState gDriverState;
 
     switch (inAddress->mSelector) {
         case kAudioObjectPropertyBaseClass:
