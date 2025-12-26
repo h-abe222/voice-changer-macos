@@ -1,0 +1,246 @@
+了解。では macOS / 統合版（Listening + Speaking / 追加A=仮想マイク方式） を、開発AIにそのまま渡せるレベルの 実装指示書（SRS + 技術設計要件） として “一段深く” 落とします。
+（MVPは v1=Speaking中心、v1.5でListeningの「システム音取り込み」を追加、という前提で書きます）
+
+⸻
+
+統合版SRS（macOS）実装指示書レベル
+
+0. 用語
+	•	Physical Mic：内蔵/外付けマイク
+	•	Physical HP：ヘッドホン（有線/BT）
+	•	V-Mic：仮想マイク（会議アプリが選ぶ入力）
+	•	V-Spk：仮想スピーカー（システム音を取り込むための出力先。v1.5で追加）
+	•	Speaking Mode：マイク→変換→V-Mic
+	•	Listening Mode：入力（周囲音 or システム音）→変換→Physical HP
+	•	Engine：音声処理（DSP/AI）を行う処理エンジン
+
+⸻
+
+1. MVP範囲確定
+
+1.1 v1（最初に出す）
+	•	**Speaking Modeのみを“業務利用レベルで安定”**させる
+	•	変換：NS/AGC + 軽量Voice FX（ピッチ/フォルマント/EQ程度）
+	•	仮想マイク（V-Mic）を実装（Core Audio Audio Server Driver Plug-in）
+	•	UI：Speaking ON/OFF、プリセット、レイテンシモード、入力マイク選択、VUメータ、モニタ（自分の声をヘッドホンに返すON/OFF）
+
+1.2 v1.5（次）
+	•	Listening Mode追加（システム音取り込み）
+	•	**仮想スピーカー（V-Spk）**追加
+	•	ルーティング：会議アプリ出力→V-Spk→Engine→Physical HP
+	•	AEC（エコーキャンセル）の導入（SpeakとListenを同時にONにするため）
+
+⸻
+
+2. ユースケース（最小）
+
+UC-01：Speakingで会議に声を送る
+	1.	ユーザーがアプリ起動
+	2.	Input=Physical Mic、Output=V-Mic を確認
+	3.	Speaking ON
+	4.	Google Meetでマイクに V-Mic を選択
+	5.	変換された声が相手に届く
+	6.	Speaking OFFで即停止
+
+受入基準：
+	•	ON/OFFで会議側音声が確実に切り替わる
+	•	音切れが目立たない（短いフェードで処理）
+	•	端末内レイテンシ（Engine）50ms以下目標
+
+UC-02：プリセット切替
+	•	会議中にプリセットを変えても破綻しない
+	•	100ms以下の無音/ノイズで切替
+
+⸻
+
+3. 状態遷移（実装用）
+
+アプリ全体を 状態機械で管理（落ちない・復旧できるが最優先）
+
+3.1 Speaking Mode State
+	•	IDLE：未処理
+	•	ARMED：デバイス/権限/ストリーム準備完了
+	•	RUNNING：処理中
+	•	DEGRADED：負荷/ドロップにより品質低下モード
+	•	ERROR：復旧待ち（ユーザー操作 or 自動復旧）
+
+イベント：
+	•	EVT_START / EVT_STOP
+	•	EVT_DEVICE_CHANGED（マイク/HP抜き差し）
+	•	EVT_PERMISSION_REVOKED
+	•	EVT_OVERRUN（バッファ溢れ）
+	•	EVT_UNDERRUN（バッファ枯渇）
+
+遷移ルール（必須）：
+	•	RUNNINGで EVT_DEVICE_CHANGED → DEGRADED へ、復旧できれば RUNNING 戻し、無理なら ERROR
+	•	ERRORは自動で ARMED再試行（最大N回、バックオフ）
+
+⸻
+
+4. 音声パイプライン（入出力IF）
+
+4.1 v1（Speaking）データフロー
+
+Physical Mic (48kHz mono)
+→ Capture (CoreAudio)
+→ Pre (HPF, DC remove)
+→ NS (noise suppression)
+→ AGC
+→ Voice FX (pitch/formant/EQ)
+→ Limiter
+→ Output to V-Mic (48kHz mono)
+
+入力仕様
+	•	サンプルレート：48kHz
+	•	チャンネル：mono（基本）
+	•	サンプルフォーマット：float32（内部）
+
+出力仕様
+	•	V-Micへ 48kHz mono を供給（会議側に合わせる）
+
+⸻
+
+5. スレッド設計（低遅延・安定重視）
+
+音声処理はリアルタイム制約が強いので、UIスレッドと完全分離。
+
+5.1 スレッド構成
+	1.	Audio I/O Thread（リアルタイム）
+
+	•	CoreAudio callback で動く
+	•	ここでは「重い処理」をしない（最小限のコピー・リングバッファ）
+
+	2.	DSP/Engine Thread（高優先度）
+
+	•	リングバッファからフレームを取り出し処理
+	•	処理結果を出力用リングバッファへ
+
+	3.	Control Thread（通常優先度）
+
+	•	ON/OFF、プリセット変更、デバイス切替要求を受ける
+	•	Engineに“安全に”コマンドを渡す（ロックの取り方注意）
+
+	4.	UI/Main Thread
+
+	•	表示、設定、ログ表示のみ
+
+5.2 リングバッファ要件（必須）
+	•	Single Producer / Single Consumer（SPSC）で実装（ロックレス推奨）
+	•	バッファ長：少なくとも 200ms分（デバイス変動の吸収）
+	•	オーバーラン時：
+	•	まず品質を落とす（DEGRADED）
+	•	それでもダメなら短いミュートで復帰（音割れよりマシ）
+
+⸻
+
+6. バッファ/フレーム設計（設定値）
+
+6.1 フレームサイズ（推奨）
+	•	48kHzで
+	•	128 samples（2.67ms）
+	•	256 samples（5.33ms）
+	•	Ultra Low：128
+	•	Balanced：256
+	•	High Quality：256 + 重いFX許可
+
+6.2 レイテンシ内訳（目標の考え方）
+	•	I/Oバッファ：5〜10ms
+	•	Engine処理：10〜20ms
+	•	安全マージン：10ms
+→ 端末内 30〜40ms級を狙う
+
+⸻
+
+7. コマンドIF（UI → Engine）
+
+Engineは “コマンドキュー” で制御（リアルタイムスレッドを止めない）
+
+7.1 必須コマンド
+	•	StartSpeaking(inputDeviceId, outputVirtualMicId, presetId, latencyMode)
+	•	StopSpeaking()
+	•	SetPreset(presetId, target=Speak|Listen)
+	•	SetLatencyMode(UltraLow|Balanced|HighQuality)
+	•	SetInputDevice(deviceId)
+	•	SetMonitor(enabled, monitorOutputDeviceId)（自分の変換音をヘッドホンへ返す）
+	•	CalibrateLevel()（AGC基準）
+
+7.2 コマンド適用タイミング
+	•	プリセット変更は フレーム境界でクロスフェード（例：20〜50ms）
+	•	Stopは **短いフェードアウト（10〜30ms）**してクリックノイズ回避
+
+⸻
+
+8. UI要件（v1）
+
+8.1 画面構成（最小）
+	•	Speaking：ON/OFFトグル
+	•	Input Mic選択（ドロップダウン）
+	•	Preset選択（リスト）
+	•	Latency Mode（3段階）
+	•	Meter（Input/Output VU）
+	•	Monitor（自分の声をHPで確認：ON/OFF）
+	•	Status表示：IDLE/ARMED/RUNNING/DEGRADED/ERROR + 理由
+
+⸻
+
+9. macOS仮想マイク要件（V-Mic）
+
+9.1 構造要件（実装の責務分離）
+	•	Audio Server Driver Plug-in：V-MicデバイスをOSに提供
+	•	Helper/Daemon：Engineと連携してV-Micへ音声を供給（IPC）
+
+9.2 IPC要件
+	•	低遅延：共有メモリ（ring buffer）+ 軽量同期が理想
+	•	コマンド：XPC（mac推奨）でControl系を送る
+	•	失敗時：Helperが落ちてもPlug-inは「無音を返して会議アプリを落とさない」
+
+⸻
+
+10. 受入基準（Acceptance Criteria）v1
+	•	Google Meet（Chrome）で V-Mic が選べる
+	•	Speaking ONで相手に音声が届く（途切れない）
+	•	10分会議でクラッシュしない
+	•	プリセット変更で破綻しない（爆音/ノイズ禁止）
+	•	CPU高負荷時に DEGRADED へ移行し、音切れを最小化する
+
+⸻
+
+11. v1.5に向けた拡張ポイント（設計だけ先に埋める）
+
+11.1 Listening Mode（システム音）
+	•	V-Spk（仮想スピーカー）を追加し、会議アプリの出力先に選べるようにする
+	•	V-Spk出力をEngineが取り込み→変換→Physical HPへ
+
+11.2 AEC（エコーキャンセル）
+	•	AEC参照信号：Listening出力（またはV-Spk入力）を利用
+	•	SpeakとListen同時ON時の事故（エコー/ハウリング）を抑える
+
+⸻
+
+12. 実装タスク分割（そのままチケット化）
+
+Core（v1）
+	1.	V-Mic AudioServerPlugIn：デバイス公開
+	2.	Helper：IPC受信 + V-Micへサンプル供給
+	3.	Engine：DSPチェーン（NS/AGC/FX/Limiter）
+	4.	RingBuffer：SPSC実装
+	5.	App UI：Speakingトグル/プリセット/レイテンシ/メータ/状態表示
+	6.	テスト：レイテンシ測定ツール（内蔵テストトーン）
+
+次（v1.5）
+	7.	V-Spk追加
+	8.	Listeningチェーン追加
+	9.	AEC追加
+	10.	“安全モード”設計（BT遅延/スピーカー利用時の制限）
+
+⸻
+
+次にこちらで作るもの（すぐ出せます）
+
+このまま進めるなら、開発AIが迷わないように さらに具体化した2点を続けて出します：
+	1.	モジュール別のI/F定義（クラス/メソッド粒度）
+	•	Engine, DeviceManager, CommandQueue, AudioCallback, IPC など
+	2.	Jiraチケット用の詳細DoD（Definition of Done）
+	•	各チケットの完了条件、テスト方法、ログ項目
+
+この2点も続けて書き起こします（ここから先は実装がかなり楽になります）。

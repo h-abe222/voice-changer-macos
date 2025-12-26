@@ -1,0 +1,281 @@
+了解。続けて、(1) モジュール別I/F定義（クラス/メソッド粒度） と、(2) Jiraチケット用DoD（Definition of Done） を出します。
+※macOS前提、v1=Speaking中心（仮想マイク）、v1.5でListening（仮想スピーカー）追加の拡張点も“最初から差し込める形”にしてあります。
+
+⸻
+
+1) モジュール別I/F定義（実装AIに渡せる粒度）
+
+1.1 App（UI/アプリ本体）
+
+責務：ユーザー操作、設定保持、状態表示、Engine/Helperへの制御
+	•	AppController
+	•	start()
+	•	shutdown()
+	•	onToggleSpeaking(enabled: Bool)
+	•	onSelectInputDevice(deviceId: String)
+	•	onSelectPreset(presetId: String, target: PresetTarget /*Speak|Listen*/)
+	•	onSelectLatencyMode(mode: LatencyMode /*UltraLow|Balanced|HighQuality*/)
+	•	onToggleMonitor(enabled: Bool)（自分の変換音をヘッドホン返し）
+	•	onOpenDiagnostics()
+	•	SettingsStore
+	•	load() -> Settings
+	•	save(settings: Settings)
+	•	migrateIfNeeded()
+	•	StatusViewModel
+	•	state: EngineState /*IDLE/ARMED/RUNNING/DEGRADED/ERROR*/
+	•	lastError: ErrorInfo?
+	•	inputLevelDb: Float
+	•	outputLevelDb: Float
+	•	cpuLoad: Float
+	•	xruns: Int（overrun/underrun回数）
+
+⸻
+
+1.2 DeviceManager（デバイス列挙/監視）
+
+責務：CoreAudioデバイス列挙、抜き差し監視、既定デバイス変更検知
+	•	DeviceManager
+	•	listInputDevices() -> [AudioDevice]
+	•	listOutputDevices() -> [AudioDevice]
+	•	getDefaultInput() -> AudioDevice
+	•	getDefaultOutput() -> AudioDevice
+	•	findVirtualMic() -> AudioDevice?
+	•	findVirtualSpk() -> AudioDevice?（v1.5）
+	•	subscribeDeviceChanges(handler: (DeviceChangeEvent) -> Void) -> SubscriptionToken
+	•	unsubscribe(token: SubscriptionToken)
+	•	AudioDevice
+	•	id: String
+	•	name: String
+	•	channels: Int
+	•	sampleRates: [Int]
+	•	isVirtual: Bool
+	•	transport: TransportType /*BuiltIn/USB/Bluetooth/Virtual*/
+
+⸻
+
+1.3 CommandQueue（UI→Engine制御）
+
+責務：リアルタイムスレッドを止めずにコマンド適用
+	•	CommandQueue
+	•	enqueue(_ cmd: EngineCommand)
+	•	drain(max: Int) -> [EngineCommand]（Engine側が周期的に回収）
+	•	EngineCommand（必須）
+	•	StartSpeaking(inputId: String, virtualMicId: String, presetId: String, latencyMode: LatencyMode)
+	•	StopSpeaking()
+	•	SetPreset(target: PresetTarget, presetId: String)
+	•	SetLatencyMode(mode: LatencyMode)
+	•	SetInputDevice(deviceId: String)
+	•	SetMonitor(enabled: Bool, outputDeviceId: String)（通常はPhysical HP）
+	•	ResetStats()
+
+v1.5拡張予定で最初から型だけ用意（未実装でもOK）
+
+	•	StartListening(source: ListeningSource /*System|Mic*/, presetId: String, outputDeviceId: String)
+	•	StopListening()
+	•	SetListeningSource(source: ListeningSource)
+
+⸻
+
+1.4 Engine（DSP/音声処理コア）
+
+責務：音声処理、リングバッファ運用、状態管理、メトリクス収集
+	•	AudioEngine
+	•	configure(config: EngineConfig)
+	•	handle(commands: [EngineCommand])
+	•	process(input: AudioFrame) -> AudioFrame
+	•	getStats() -> EngineStats
+	•	getState() -> EngineState
+	•	setDegradedMode(enabled: Bool, reason: DegradedReason)
+	•	EngineConfig
+	•	sampleRate: Int = 48000
+	•	frameSize: Int /*128|256*/
+	•	inputChannels: Int = 1
+	•	outputChannels: Int = 1
+	•	ringBufferMs: Int = 200
+	•	crossfadeMs: Int = 30
+	•	latencyMode: LatencyMode
+	•	AudioFrame
+	•	timestampHostTime: UInt64
+	•	samples: [Float]（mono float32、frameSize）
+	•	numSamples: Int
+	•	EngineStats
+	•	inputLevelDb: Float
+	•	outputLevelDb: Float
+	•	cpuLoad: Float
+	•	xruns: Int
+	•	droppedFrames: Int
+	•	stateTransitions: [StateTransition]
+
+⸻
+
+1.5 DSPChain（処理チェーン）
+
+責務：NS/AGC/FX/Limiterの直列処理、プリセット適用
+	•	DSPChain
+	•	setPreset(preset: VoicePreset)
+	•	setLatencyMode(_ mode: LatencyMode)（重い処理を抑制）
+	•	process(_ frame: inout AudioFrame)
+	•	NoiseSuppressor
+	•	configure(sampleRate: Int, frameSize: Int)
+	•	process(_ frame: inout AudioFrame)
+	•	AutoGainControl
+	•	configure(targetDb: Float, maxGainDb: Float, attackMs: Int, releaseMs: Int)
+	•	process(_ frame: inout AudioFrame)
+	•	VoiceFX
+	•	setPitch(semitones: Float)
+	•	setFormant(shift: Float)
+	•	setEQ(bands: [EQBand])
+	•	process(_ frame: inout AudioFrame)
+	•	Limiter
+	•	configure(ceilingDb: Float)
+	•	process(_ frame: inout AudioFrame)
+	•	VoicePreset
+	•	id: String
+	•	name: String
+	•	params: PresetParams（pitch/formant/eq/agc/ns等）
+	•	qualityCost: Int（HighQualityでのみ許可など）
+
+⸻
+
+1.6 RingBuffer（SPSC・共有メモリ対応）
+
+責務：Audio I/O と Engine の境界を支える
+	•	SPSCRingBuffer<T>
+	•	init(capacityFrames: Int)
+	•	push(_ item: T) -> Bool（満杯ならfalse）
+	•	pop() -> T?（空ならnil）
+	•	count() -> Int
+	•	reset()
+
+IPC（App/Helper間）では共有メモリ版を使う
+
+	•	SharedMemoryRingBuffer
+	•	create(name: String, sizeBytes: Int) -> Handle
+	•	open(name: String) -> Handle
+	•	write(frame: AudioFrame) -> Bool
+	•	read() -> AudioFrame?
+
+⸻
+
+1.7 Virtual Device Layer（CoreAudio Audio Server Plug-in）
+
+責務：OSへ「V-Mic（仮想入力）」を提供。v1.5でV-Spk追加。
+	•	VirtualMicDriverPlugin（Audio Server Driver Plug-in）
+	•	onStart()
+	•	onStop()
+	•	onReadInput(requestFrames: Int) -> AudioFrame
+	•	原則：Helperから供給されるリングバッファを読む
+	•	供給がない時は無音を返す（会議アプリを落とさない）
+	•	VirtualSpkDriverPlugin（v1.5）
+	•	onWriteOutput(frame: AudioFrame)
+	•	会議アプリの出力がここに来る→Helperへ渡す
+
+⸻
+
+1.8 Helper（常駐/IPC/復旧）
+
+責務：仮想デバイスとEngineをつなぐ。落ちても復旧。Plug-inは無音で耐える。
+	•	HelperService
+	•	start()
+	•	stop()
+	•	connectToAppViaXPC()
+	•	bindSharedMemoryBuffers()
+	•	runEngineLoop()（高優先度）
+	•	handleCommands(commands: [EngineCommand])
+	•	healthCheck() -> HealthStatus
+	•	IPC (XPC)
+	•	sendCommand(cmd: EngineCommand)
+	•	subscribeStats(handler: (EngineStats) -> Void)
+
+⸻
+
+2) Jiraチケット & DoD（Definition of Done）
+
+EPIC: macOS v1 Speaking（仮想マイク）
+
+T1: Virtual Mic Plug-in 基盤（デバイス公開）
+DoD
+	•	macOSで「オーディオ入力デバイス」としてV-Micが出現
+	•	Audio MIDI設定で選択できる
+	•	会議アプリ（Chrome/Meet）でマイク候補として表示される
+	•	供給音がない場合でも無音で安定（クラッシュなし）
+	•	ログ：起動/停止/読み出し回数/バッファ枯渇回数
+
+T2: Helper-Service（XPC + 共有メモリリングバッファ）
+DoD
+	•	AppからXPCでStart/Stopコマンド送信できる
+	•	SharedMemoryRingBufferの作成/オープンが安定
+	•	Helper停止→再起動で復旧（最大3回自動リトライ＋バックオフ）
+	•	Plug-in側はHelper不在でも無音継続（会議アプリが落ちない）
+
+T3: Audio Capture（Physical Mic → Helper）
+DoD
+	•	指定した入力マイクから48kHz monoで取得できる
+	•	デバイス抜き差し時にDEGRADED→復旧 or ERROR遷移
+	•	最低10分連続でXRUNが閾値以下（例：<3）
+	•	マイク権限未許可時のユーザー導線（設定への案内）
+
+T4: DSPChain v1（NS/AGC/VoiceFX/Limiter）
+DoD
+	•	48kHz/128or256 samplesで安定処理
+	•	プリセット切替で破綻しない（クリック/爆音なし）
+	•	CPU高負荷時、LatencyModeに応じて処理を自動抑制
+	•	変換OFF（バイパス）時は素通しの音質を維持
+
+T5: Virtual Mic への供給（Engine→V-Mic）
+DoD
+	•	Speaking ONでV-Micへ音声が流れる
+	•	Speaking OFFで即停止（フェードアウトでクリック抑止）
+	•	バッファ枯渇時は無音へフォールバックし復旧できる
+	•	Meet側で「相手に音が届く」ことを実機確認（チェックリスト添付）
+
+T6: App UI v1（Speaking操作・状態・メータ）
+DoD
+	•	Speakingトグル、入力デバイス選択、プリセット、LatencyModeが動作
+	•	VUメータ（in/out）と状態（IDLE/ARMED/RUNNING/DEGRADED/ERROR）表示
+	•	ERROR時：原因文言＋復旧手順（再接続/権限/デバイス確認）
+	•	設定保存→再起動しても復元
+
+T7: レイテンシ/安定性 テストハーネス
+DoD
+	•	テストトーン生成（クリック/サイン）機能
+	•	端末内推定レイテンシ表示（バッファ設定から算出 + 実測ガイド）
+	•	XRUN/ドロップ/CPUログをエクスポート（JSON/CSV）
+
+⸻
+
+EPIC: macOS v1.5 Listening（仮想スピーカー + AEC）
+
+T8: Virtual Speaker Plug-in（V-Spk）追加
+DoD
+	•	macOSの出力デバイスとしてV-Spkが出現
+	•	会議アプリのスピーカー出力に選べる
+	•	V-Spkに来た音をHelperが受け取れる（write path）
+
+T9: Listening Mode（System audio→変換→Physical HP）
+DoD
+	•	会議アプリ出力→V-Spk→Engine→ヘッドホンで聴ける
+	•	Listen ON/OFFで即切替
+	•	BTヘッドホン遅延が大きい場合は警告（安全UX）
+
+T10: AEC（Speak+Listen同時ONの安全化）
+DoD
+	•	Speak+Listen同時ONでエコーが実用レベルで抑制
+	•	AECが効かない場合は“安全モード”が働く（片方自動弱化/停止）
+	•	ハウリング事故が再現テストで起きない（テストケース明記）
+
+⸻
+
+3) “実装AI”に渡す時の注意点（最小）
+	•	リアルタイムスレッドに重い処理を置かない（callbackはコピー/リングだけ）
+	•	Plug-inは落ちないことが最重要：供給が無い時は“無音”で返す
+	•	XPCは制御、共有メモリは音声（役割を混ぜない）
+
+⸻
+
+次に、これをさらに「そのまま実装しやすい」ように、
+	•	ファイル/フォルダ構成（モジュール境界）
+	•	データ構造（AudioFrameのメモリレイアウト・アラインメント）
+	•	テストケース一覧（Meet/Zoom/Teams別チェックリスト）
+
+まで一気に出せます。続けて出します。

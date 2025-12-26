@@ -1,0 +1,251 @@
+了解。では続けて、(A) リポジトリ/フォルダ構成、(B) AudioFrameのメモリレイアウト（共有メモリ前提）、(C) 会議アプリ別テストケース一覧 を、実装に直結する形で出します。
+（macOS / v1=Speaking、v1.5=Listening追加の拡張余地込み）
+
+⸻
+
+A) リポジトリ / フォルダ構成（境界が崩れない設計）
+
+A.1 目的
+	•	「App」「Helper」「AudioDriver(Plug-in)」「SharedCore」を明確に分離
+	•	低遅延要件のため、DSPとI/Oを疎結合
+	•	v1.5でV-Spkを追加しても破綻しない
+
+A.2 推奨構成（例）
+
+repo/
+README.md
+docs/
+SRS.md
+Architecture.md
+ThreatModel.md
+TestPlan.md
+Release.md
+
+shared/
+core/
+AudioTypes/ # AudioFrame, enums, structs (C-ABI)
+RingBuffer/ # SPSC + shared memory ring
+Presets/    # preset schema + default presets
+Logging/    # structured logging
+Metrics/    # stats structs + aggregation
+Utils/      # time, atomic, endian, alignment helpers
+
+dsp/
+DSPChain/
+NoiseSuppressor/
+AutoGainControl/
+VoiceFX/
+Limiter/
+Resampler/       # (必要になったら)
+AEC/             # v1.5〜
+
+ipc/
+XPCProtocol/ # XPC interfaces
+IPCClient/
+IPCServer/
+
+mac/
+App/
+Sources/
+AppController.swift
+SettingsStore.swift
+StatusViewModel.swift
+UI/                   # SwiftUI views
+Diagnostics/
+Resources/
+App.entitlements
+Info.plist
+
+Helper/
+Sources/
+HelperService.swift
+EngineHost.swift          # Engine main loop
+DeviceManager.swift
+SharedMemoryBinding.swift
+CommandHandler.swift
+Watchdog.swift
+Helper.entitlements
+Info.plist
+
+AudioDriver/
+VirtualMic/
+Sources/
+VirtualMicDriver.mm # plug-in entry points
+VirtualMicDevice.mm
+VirtualMicStream.mm
+VirtualSpk/         # v1.5〜
+Sources/
+VirtualSpkDriver.mm
+Installer/
+pkg/
+scripts/
+
+tools/
+latency_tester/
+preset_editor/  # optional
+log_viewer/
+
+ci/
+build.yml
+notarization.yml
+
+A.3 境界ルール（重要）
+	•	shared/core は C ABI互換に寄せる（Swift専用型は置かない）
+	•	AudioDriver は 落ちないが最優先：重い処理禁止（音声は共有メモリを読むだけ）
+	•	DSPは shared/dsp に集約し、App/Helperから呼ぶ
+
+⸻
+
+B) AudioFrame メモリレイアウト（共有メモリで安全に運ぶ）
+
+B.1 方針
+	•	共有メモリで渡すなら、固定長フレームが一番安全
+	•	可変長配列は避ける（ポインタが共有メモリ外を指す事故を防ぐ）
+	•	48kHz mono / frameSize=128 or 256 を前提に “2種類の固定構造体” を用意
+
+B.2 C互換Struct（例：Float32 mono）
+
+共通ヘッダ
+	•	16byte境界に揃える（SIMD/コピー効率、アライン事故回避）
+
+// shared/core/AudioTypes/AudioFrame.h
+#pragma pack(push, 1)
+typedef struct {
+uint32_t magic                         ;          // 'AFRM' 0x4D524641
+uint16_t version                       ;        // 1
+uint16_t frameSize                     ;      // 128 or 256
+uint32_t sampleRate                    ;     // 48000
+uint32_t channels                      ;       // 1
+uint64_t timestampHost                 ;  // mach_absolute_time()
+uint32_t flags                         ;          // bit0: silence, bit1: clipped, etc.
+uint32_t reserved                      ;       // padding
+} AudioFrameHeader                     ;
+#pragma pack(pop)
+
+128サンプル版 / 256サンプル版
+
+// 128 samples
+typedef struct {
+AudioFrameHeader h ;
+float samples[128] ;
+} AudioFrame128    ;
+
+// 256 samples
+typedef struct {
+AudioFrameHeader h ;
+float samples[256] ;
+} AudioFrame256    ;
+
+B.3 共有メモリリングバッファ（フレーム単位）
+	•	SPSC（1 Producer / 1 Consumer）
+	•	“書き込み中フレーム” を読まないために sequence番号を使う
+
+typedef struct {
+uint32_t capacity           ;   // number of frames
+uint32_t frameBytes         ; // sizeof(AudioFrame128) or 256
+_Atomic uint32_t writeIndex ;
+_Atomic uint32_t readIndex  ;
+_Atomic uint32_t xrunCount  ;
+uint8_t data[]              ;     // frameBytes * capacity
+} SharedRingBuffer          ;
+
+要件
+	•	capacity は最低 200ms分
+	•	frameSize=256（5.33ms）なら 200ms ≈ 38フレーム → 64フレーム推奨
+	•	push失敗（満杯）→ xrunCount++、古い方を捨てるか、DEGRADEDへ
+
+B.4 バージョニング要件
+	•	header.version を必ず見て互換性判定
+	•	magic 不一致なら無音フレーム扱い（クラッシュ回避）
+
+⸻
+
+C) テストケース一覧（Meet/Zoom/Teams別チェックリスト）
+
+共通前提（全アプリ）
+	•	macOS 12+ / 13+（最低2系統）
+	•	有線ヘッドホン / Bluetooth（AirPods等）
+	•	入力：内蔵マイク / USBマイク
+
+⸻
+
+C.1 Google Meet（Chrome）
+
+TC-MEET-01：V-Mic選択と送話
+	•	手順
+	1.	App起動 → Speaking ON
+	2.	Meet → 設定 → マイク = V-Mic
+	3.	自分の声が入力メータに反映
+	4.	相手に音声が届く
+	•	期待結果
+	•	途切れ/無音が発生しない（10分）
+	•	プリセット切替で破綻しない
+
+TC-MEET-02：ON/OFF切替
+	•	手順：会議中にSpeaking OFF→ONを3回
+	•	期待結果：クリックノイズ無し、復帰が速い（1秒以内）
+
+TC-MEET-03：デバイス抜き差し
+	•	手順：USBマイクを抜く→別マイクへ切替
+	•	期待結果：DEGRADED表示→復旧 or ERRORで明確に案内
+
+⸻
+
+C.2 Zoom（クライアント）
+
+TC-ZOOM-01：Zoom音声設定
+	•	マイク=V-Mic、スピーカー=ヘッドホン
+	•	期待：音声テストで入力が安定
+
+TC-ZOOM-02：Zoomの音声処理と干渉
+	•	Zoomの「自動音量調整」「ノイズ抑制」をON/OFFして比較
+	•	期待：どちらでも破綻しない（推奨設定をドキュメント化）
+
+⸻
+
+C.3 Microsoft Teams（クライアント/ブラウザ）
+
+TC-TEAMS-01：デバイス選択
+	•	マイク=V-Micが候補に出る
+	•	期待：通話テストで正常に送話
+
+TC-TEAMS-02：バックグラウンド復帰
+	•	通話中にアプリをバックグラウンド→復帰
+	•	期待：音が戻る、状態遷移が正しい
+
+⸻
+
+C.4 事故系（最重要）
+
+TC-ERR-01：Helper停止
+	•	手順：Helperを強制終了
+	•	期待：
+	•	Plug-inはクラッシュせず無音継続
+	•	AppはERROR表示→自動復旧を試行
+
+TC-ERR-02：権限未許可
+	•	手順：マイク権限を拒否
+	•	期待：ARMEDにならず、設定誘導UIが出る
+
+TC-ERR-03：Bluetooth遅延
+	•	手順：AirPodsでUltraLowを選択
+	•	期待：遅延が閾値超なら警告しBalancedへ誘導（または自動切替）
+
+⸻
+
+D) “実装が詰まるポイント” を先に要件化しておく（超重要）
+	1.	Plug-inは音声処理をしない：共有メモリを読むだけ
+	2.	Helperが落ちてもMeetは落とさない：無音返し
+	3.	frameSize固定：共有メモリで可変長を扱わない
+	4.	状態遷移ログ：不具合の9割がデバイス/権限/復帰なので可観測性が命
+
+⸻
+
+ここまでで、実装AIに渡しても “設計の穴” が出にくいレベルになっています。
+
+次に出せるもの（必要ならこのまま続けて出します）：
+	•	pkgインストーラ要件（仮想デバイス導入のUX、署名/Notarization）
+	•	Entitlements/権限設計（App/Helper/Driverそれぞれ）
+	•	ログ設計（PIIを残さない・原因解析に足る）
+
+この3点も続けて作ります。
