@@ -17,11 +17,11 @@
 
 | フェーズ | 進捗 | 完了タスク | 総タスク |
 |---------|------|-----------|---------|
-| Phase 0: 環境構築 | 0% | 0 | 15 |
+| Phase 0: 環境構築 | 40% | 6 | 15 |
 | Phase 1: MVP (Speaking) | 0% | 0 | 45 |
 | Phase 2: Listening + 安定化 | 0% | 0 | 25 |
 | Phase 3: 高度な音声変換 | 0% | 0 | 15 |
-| **合計** | **0%** | **0** | **100** |
+| **合計** | **6%** | **6** | **100** |
 
 ---
 
@@ -33,32 +33,32 @@
 - [ ] **0.1.2** macOS 14+ (Sonoma) 開発機準備
 - [ ] **0.1.3** Apple Developer Program 登録確認
 - [ ] **0.1.4** コード署名証明書・プロビジョニング設定
-- [ ] **0.1.5** Git リポジトリ初期化
+- [x] **0.1.5** Git リポジトリ初期化 → https://github.com/h-abe222/voice-changer-macos
 
 ### 0.2 GCP 環境構築
 
-- [ ] **0.2.1** GCP プロジェクト作成
-  - [ ] プロジェクトID決定・作成
-  - [ ] 請求先アカウント設定
-  - [ ] IAM権限設定（開発者用）
+- [x] **0.2.1** GCP プロジェクト作成 → `voice-changer-mac` (info@haruniko.co.jp)
+  - [x] プロジェクトID決定・作成
+  - [x] 請求先アカウント設定
+  - [x] IAM権限設定（開発者用）
 
-- [ ] **0.2.2** Cloud Build 設定（CI/CD）
-  - [ ] Cloud Build API 有効化
+- [x] **0.2.2** Cloud Build 設定（CI/CD）
+  - [x] Cloud Build API 有効化
   - [ ] ビルドトリガー設定（main/develop ブランチ）
   - [ ] macOS ビルド用設定（※外部CIとの連携検討）
 
-- [ ] **0.2.3** Cloud Storage 設定（成果物保管）
-  - [ ] バケット作成（ビルド成果物用）
-  - [ ] バケット作成（クラッシュログ/診断データ用）
-  - [ ] ライフサイクルポリシー設定（90日で削除等）
+- [x] **0.2.3** Cloud Storage 設定（成果物保管）
+  - [x] バケット作成（ビルド成果物用） → `voice-changer-mac-builds`
+  - [x] バケット作成（クラッシュログ/診断データ用） → `voice-changer-mac-logs`
+  - [x] ライフサイクルポリシー設定（90日で削除）
 
 - [ ] **0.2.4** Firestore 設定（ユーザーデータ・プリセット共有 - 将来用）
-  - [ ] Firestore API 有効化
+  - [x] Firestore API 有効化
   - [ ] セキュリティルール設計
 
-- [ ] **0.2.5** Cloud Functions 設定（将来のAPI用）
-  - [ ] Functions API 有効化
-  - [ ] サービスアカウント作成
+- [x] **0.2.5** Cloud Functions 設定（将来のAPI用）
+  - [x] Functions API 有効化
+  - [x] サービスアカウント作成 → `voice-changer-cicd@voice-changer-mac.iam.gserviceaccount.com`
 
 ### 0.3 プロジェクト構造作成
 
