@@ -21,23 +21,21 @@ let package = Package(
         // メインアプリ
         .executableTarget(
             name: "VoiceChangerApp",
-            dependencies: ["AudioEngine", "DSP"],
-            path: "App/Sources/App",
-            resources: [
-                .process("../Resources")
-            ]
+            dependencies: ["AudioEngine", "DSP", "Utilities"],
+            path: "App/Sources/App"
         ),
 
         // オーディオエンジン
         .target(
             name: "AudioEngine",
-            dependencies: ["DSP"],
+            dependencies: ["DSP", "Utilities", "CHelpers"],
             path: "App/Sources/Audio"
         ),
 
         // DSP処理
         .target(
             name: "DSP",
+            dependencies: ["Utilities"],
             path: "App/Sources/DSP"
         ),
 
@@ -54,9 +52,17 @@ let package = Package(
             path: "App/Sources/Models"
         ),
 
+        // Cヘルパー（Swift非対応POSIX関数ラッパー）
+        .target(
+            name: "CHelpers",
+            path: "App/Sources/CHelpers",
+            publicHeadersPath: "include"
+        ),
+
         // ユーティリティ
         .target(
             name: "Utilities",
+            dependencies: ["CHelpers"],
             path: "App/Sources/Utilities"
         ),
 

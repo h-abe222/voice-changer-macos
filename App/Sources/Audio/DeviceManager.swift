@@ -1,6 +1,7 @@
 import Foundation
 import CoreAudio
 import Combine
+import Utilities
 
 /// オーディオデバイス情報
 public struct AudioDevice: Identifiable, Hashable, Sendable {

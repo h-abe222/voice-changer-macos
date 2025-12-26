@@ -1,4 +1,7 @@
 import Foundation
+import Utilities
+import DSP
+import CHelpers
 
 /// 共有メモリ設定
 public enum SharedMemoryConfig {
@@ -43,6 +46,9 @@ public final class SharedMemoryOutput {
 
     private let lock = NSLock()
 
+    // ローカルのインデックス追跡（アトミック操作の代替）
+    private var localWriteIndex: Int = 0
+
     // MARK: - Initialization
 
     public init() {}
@@ -60,28 +66,28 @@ public final class SharedMemoryOutput {
 
         guard !isConnected else { return }
 
-        // 共有メモリを作成
+        // 共有メモリを作成 (Cラッパーを使用)
         let name = SharedMemoryConfig.name
-        fileDescriptor = shm_open(name, O_CREAT | O_RDWR, 0644)
+        fileDescriptor = vc_shm_open(name, O_CREAT | O_RDWR, 0644)
 
         guard fileDescriptor >= 0 else {
-            throw SharedMemoryError.createFailed(errno: errno)
+            throw SharedMemoryError.createFailed(errno: vc_get_errno())
         }
 
         // サイズを設定
         let size = SharedMemoryConfig.totalSize
         guard ftruncate(fileDescriptor, off_t(size)) == 0 else {
-            close(fileDescriptor)
+            Darwin.close(fileDescriptor)
             fileDescriptor = -1
-            throw SharedMemoryError.truncateFailed(errno: errno)
+            throw SharedMemoryError.truncateFailed(errno: vc_get_errno())
         }
 
         // メモリマップ
         let ptr = mmap(nil, size, PROT_READ | PROT_WRITE, MAP_SHARED, fileDescriptor, 0)
         guard ptr != MAP_FAILED else {
-            close(fileDescriptor)
+            Darwin.close(fileDescriptor)
             fileDescriptor = -1
-            throw SharedMemoryError.mmapFailed(errno: errno)
+            throw SharedMemoryError.mmapFailed(errno: vc_get_errno())
         }
 
         mappedMemory = ptr
@@ -93,6 +99,8 @@ public final class SharedMemoryOutput {
 
         // ヘッダー初期化
         initializeHeader()
+
+        localWriteIndex = 0
 
         isConnected = true
         logInfo("SharedMemory connected", category: .audio)
@@ -107,7 +115,7 @@ public final class SharedMemoryOutput {
 
         // 状態を非アクティブに
         if let header = header {
-            OSAtomicCompareAndSwap32(1, 0, UnsafeMutablePointer<Int32>(OpaquePointer(UnsafeMutablePointer(&header.pointee.state))))
+            header.pointee.state = 0
         }
 
         // メモリアンマップ
@@ -118,7 +126,7 @@ public final class SharedMemoryOutput {
 
         // ファイルディスクリプタをクローズ
         if fileDescriptor >= 0 {
-            close(fileDescriptor)
+            Darwin.close(fileDescriptor)
             fileDescriptor = -1
         }
 
@@ -141,21 +149,8 @@ public final class SharedMemoryOutput {
         let bufferCapacity = Int(SharedMemoryConfig.frameSize * SharedMemoryConfig.bufferFrames)
         let count = min(buffer.count, bufferCapacity)
 
-        // 現在のインデックス取得（Atomic）
-        let writeIdx = Int(OSAtomicAdd32(0, UnsafeMutablePointer<Int32>(OpaquePointer(UnsafeMutablePointer(&header.pointee.writeIndex)))))
-        let readIdx = Int(OSAtomicAdd32(0, UnsafeMutablePointer<Int32>(OpaquePointer(UnsafeMutablePointer(&header.pointee.readIndex)))))
-
-        // 空き容量チェック
-        let used = (writeIdx >= readIdx) ? (writeIdx - readIdx) : (bufferCapacity - readIdx + writeIdx)
-        let available = bufferCapacity - used - 1  // 1サンプル分の余裕
-
-        if available < count {
-            // オーバーラン - 古いデータを破棄
-            logWarning("SharedMemory overrun, dropping samples", category: .audio)
-        }
-
         // 書き込み位置
-        let startPos = writeIdx % bufferCapacity
+        let startPos = localWriteIndex % bufferCapacity
 
         if startPos + count <= bufferCapacity {
             // 連続書き込み
@@ -173,8 +168,9 @@ public final class SharedMemoryOutput {
             }
         }
 
-        // 書き込みインデックス更新（Atomic）
-        OSAtomicAdd32(Int32(count), UnsafeMutablePointer<Int32>(OpaquePointer(UnsafeMutablePointer(&header.pointee.writeIndex))))
+        // 書き込みインデックス更新
+        localWriteIndex += count
+        header.pointee.writeIndex = UInt32(localWriteIndex % (bufferCapacity * 2))  // wrap around
 
         return count
     }
@@ -182,28 +178,21 @@ public final class SharedMemoryOutput {
     /// 状態をアクティブに設定
     public func activate() {
         guard let header = header else { return }
-        OSAtomicCompareAndSwap32(0, 1, UnsafeMutablePointer<Int32>(OpaquePointer(UnsafeMutablePointer(&header.pointee.state))))
+        header.pointee.state = 1
     }
 
     /// 状態を非アクティブに設定
     public func deactivate() {
         guard let header = header else { return }
-        OSAtomicCompareAndSwap32(1, 0, UnsafeMutablePointer<Int32>(OpaquePointer(UnsafeMutablePointer(&header.pointee.state))))
+        header.pointee.state = 0
     }
 
     /// リングバッファをリセット
     public func reset() {
         guard let header = header else { return }
-        OSAtomicCompareAndSwap32(
-            OSAtomicAdd32(0, UnsafeMutablePointer<Int32>(OpaquePointer(UnsafeMutablePointer(&header.pointee.writeIndex)))),
-            0,
-            UnsafeMutablePointer<Int32>(OpaquePointer(UnsafeMutablePointer(&header.pointee.writeIndex)))
-        )
-        OSAtomicCompareAndSwap32(
-            OSAtomicAdd32(0, UnsafeMutablePointer<Int32>(OpaquePointer(UnsafeMutablePointer(&header.pointee.readIndex)))),
-            0,
-            UnsafeMutablePointer<Int32>(OpaquePointer(UnsafeMutablePointer(&header.pointee.readIndex)))
-        )
+        localWriteIndex = 0
+        header.pointee.writeIndex = 0
+        header.pointee.readIndex = 0
     }
 
     // MARK: - Private Methods
@@ -233,12 +222,12 @@ public enum SharedMemoryError: LocalizedError {
 
     public var errorDescription: String? {
         switch self {
-        case .createFailed(let errno):
-            return "Failed to create shared memory: \(String(cString: strerror(errno)))"
-        case .truncateFailed(let errno):
-            return "Failed to set shared memory size: \(String(cString: strerror(errno)))"
-        case .mmapFailed(let errno):
-            return "Failed to map shared memory: \(String(cString: strerror(errno)))"
+        case .createFailed(let err):
+            return "Failed to create shared memory: \(String(cString: strerror(err)))"
+        case .truncateFailed(let err):
+            return "Failed to set shared memory size: \(String(cString: strerror(err)))"
+        case .mmapFailed(let err):
+            return "Failed to map shared memory: \(String(cString: strerror(err)))"
         case .notConnected:
             return "Shared memory not connected"
         }

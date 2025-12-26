@@ -1,4 +1,5 @@
 import SwiftUI
+import AudioEngine
 
 struct MainView: View {
     @EnvironmentObject private var appController: AppController
