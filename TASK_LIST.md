@@ -18,10 +18,10 @@
 | フェーズ | 進捗 | 完了タスク | 総タスク |
 |---------|------|-----------|---------|
 | Phase 0: 環境構築 | 80% | 12 | 15 |
-| Phase 1: MVP (Speaking) | 38% | 17 | 45 |
+| Phase 1: MVP (Speaking) | 45% | 20 | 45 |
 | Phase 2: Listening + 安定化 | 0% | 0 | 25 |
 | Phase 3: 高度な音声変換 | 0% | 0 | 15 |
-| **合計** | **29%** | **29** | **100** |
+| **合計** | **32%** | **32** | **100** |
 
 ---
 
@@ -127,11 +127,11 @@
 ### 1.2 音声キャプチャ (Audio Capture)
 
 #### 1.2.1 実装
-- [ ] **1.2.1.1** DeviceManager 実装
-  - [ ] 入力デバイス列挙機能
-  - [ ] 出力デバイス列挙機能
-  - [ ] デバイス変更監視機能
-  - [ ] デフォルトデバイス取得
+- [x] **1.2.1.1** DeviceManager 実装
+  - [x] 入力デバイス列挙機能
+  - [x] 出力デバイス列挙機能
+  - [x] デバイス変更監視機能
+  - [x] デフォルトデバイス取得
 
 - [ ] **1.2.1.2** AudioCapture 実装
   - [ ] AudioUnit 設定
@@ -158,15 +158,15 @@
   - [ ] DSPNode プロトコル定義
   - [ ] Chain 接続/処理フロー実装
 
-- [ ] **1.3.1.2** Ring Buffer 実装
-  - [ ] SPSC Lock-free Ring Buffer
-  - [ ] オーバーラン/アンダーラン検出
-  - [ ] 統計情報収集
+- [x] **1.3.1.2** Ring Buffer 実装
+  - [x] SPSC Lock-free Ring Buffer
+  - [x] オーバーラン/アンダーラン検出
+  - [x] 統計情報収集
 
 #### 1.3.2 DSP モジュール実装
-- [ ] **1.3.2.1** HPF（ハイパスフィルタ）
-  - [ ] 80Hz カットオフ実装
-  - [ ] Accelerate vDSP 使用
+- [x] **1.3.2.1** HPF（ハイパスフィルタ）
+  - [x] 80Hz カットオフ実装
+  - [x] Biquad Butterworth 実装
 
 - [ ] **1.3.2.2** Noise Suppressor
   - [ ] WebRTC NS 組み込み or 自作
@@ -187,13 +187,13 @@
   - [ ] フォルマント独立制御
   - [ ] Pitch と連携
 
-- [ ] **1.3.2.6** Equalizer（3バンド）
-  - [ ] Low/Mid/High バンド
-  - [ ] Biquad Filter 実装
+- [x] **1.3.2.6** Equalizer（3バンド）
+  - [x] Low/Mid/High バンド
+  - [x] Biquad Filter 実装（Shelf/Peaking）
 
-- [ ] **1.3.2.7** Limiter
-  - [ ] Soft Knee 実装
-  - [ ] Ceiling -1dB 設定
+- [x] **1.3.2.7** Limiter
+  - [x] Soft Knee 実装
+  - [x] Ceiling -1dB 設定
 
 #### 1.3.3 プリセット管理
 - [ ] **1.3.3.1** VoicePreset 型定義
@@ -472,5 +472,6 @@ Phase 3 (ニューラルVC)             │
 
 | 日付 | 更新内容 | 担当 |
 |------|---------|------|
+| 2025-12-27 | DeviceManager完成、DSP（HPF/EQ/Limiter）完成、ドライバビルド成功 | Claude |
 | 2025-12-27 | 共有メモリIPC・AudioEngine・ビルドスクリプト追加 | Claude |
 | 2025-12-27 | 初版作成 | Claude |
