@@ -1,8 +1,9 @@
 import Foundation
+import CoreAudio
 
 /// アプリケーション設定
 struct Settings: Codable {
-    var inputDeviceId: String?
+    var inputDeviceId: AudioDeviceID?
     var presetId: String
     var latencyMode: LatencyMode
     var isMonitorEnabled: Bool

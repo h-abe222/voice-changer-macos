@@ -1,6 +1,6 @@
 import Foundation
 import Combine
-import AudioEngine
+import CoreAudio
 
 /// アプリケーション全体の状態管理
 @MainActor
@@ -16,13 +16,17 @@ final class AppController: ObservableObject {
             }
         }
     }
-    @Published var isMonitorEnabled: Bool = false
-    @Published var selectedInputDeviceId: String?
+    @Published var isMonitorEnabled: Bool = false {
+        didSet {
+            audioEngine.setMonitor(enabled: isMonitorEnabled)
+        }
+    }
+    @Published var selectedInputDeviceId: AudioDeviceID?
     @Published var selectedPresetId: String = "default"
     @Published var latencyMode: LatencyMode = .balanced
 
-    @Published private(set) var inputLevel: Float = 0.0
-    @Published private(set) var outputLevel: Float = 0.0
+    @Published private(set) var inputLevel: Float = -60.0
+    @Published private(set) var outputLevel: Float = -60.0
     @Published private(set) var cpuLoad: Float = 0.0
     @Published private(set) var lastError: String?
 
@@ -46,23 +50,26 @@ final class AppController: ObservableObject {
     func start() async {
         do {
             try await audioEngine.prepare()
-            engineState = .armed
         } catch {
             engineState = .error
             lastError = error.localizedDescription
+            logError("Failed to prepare AudioEngine: \(error)", category: .audio)
         }
     }
 
-    func shutdown() async {
-        await audioEngine.stop()
+    func shutdown() {
+        audioEngine.stop()
         engineState = .idle
         saveSettings()
     }
 
-    func selectInputDevice(_ deviceId: String) {
+    func selectInputDevice(_ deviceId: AudioDeviceID) {
         selectedInputDeviceId = deviceId
-        Task {
-            await audioEngine.setInputDevice(deviceId)
+        do {
+            try audioEngine.setInputDevice(deviceId)
+        } catch {
+            lastError = error.localizedDescription
+            logError("Failed to set input device: \(error)", category: .audio)
         }
     }
 
@@ -85,16 +92,15 @@ final class AppController: ObservableObject {
     private func toggleSpeaking(enabled: Bool) async {
         if enabled {
             do {
-                try await audioEngine.startSpeaking()
-                engineState = .running
+                try audioEngine.startSpeaking()
             } catch {
                 engineState = .error
                 lastError = error.localizedDescription
                 isSpeakingEnabled = false
+                logError("Failed to start speaking: \(error)", category: .audio)
             }
         } else {
-            await audioEngine.stopSpeaking()
-            engineState = .armed
+            audioEngine.stopSpeaking()
         }
     }
 
